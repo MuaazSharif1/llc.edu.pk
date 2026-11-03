@@ -18,6 +18,7 @@ import { User, Program, Post, Faculty, Enquiry, Setting, Audit } from './models.
 const dir = path.dirname(fileURLToPath(import.meta.url))
 const DIST = path.join(dir, '../../client/dist'), UP = path.join(dir, '../uploads')
 fs.mkdirSync(UP, { recursive: true })
+app.use('/uploads', express.static(UP));
 const SECRET = process.env.JWT_SECRET || 'dev-secret', SITE = process.env.SITE_URL || 'http://localhost:5000'
 const app = express()
 app.set('trust proxy', 1)
@@ -320,6 +321,8 @@ app.get('/sitemap.xml', wrap(async (_, r) => {
   const u = (l, d) => `<url><loc>${SITE}${l}</loc>${d ? `<lastmod>${new Date(d).toISOString()}</lastmod>` : ''}</url>`
   r.type('xml').send(`<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">${['/', '/programs', '/admissions', '/news', '/about', '/contact'].map(x => u(x)).join('')}${p.map(x => u('/programs/' + x.slug, x.updatedAt)).join('')}${n.map(x => u('/news/' + x.slug, x.updatedAt)).join('')}</urlset>`)
 }))
+
+
 if (fs.existsSync(DIST)) {
   app.use(express.static(DIST, { index: false }))
   const esc = s => String(s || '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]))
