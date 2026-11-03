@@ -1,8 +1,7 @@
 import './dns-fix.js'
 import 'dotenv/config'
 import express from 'express'
-import 'dotenv/config'
-
+import cors from 'cors'
 import helmet from 'helmet'
 import cookieParser from 'cookie-parser'
 import rateLimit from 'express-rate-limit'
@@ -23,8 +22,23 @@ const SECRET = process.env.JWT_SECRET || 'dev-secret', SITE = process.env.SITE_U
 const app = express()
 app.set('trust proxy', 1)
 app.use(helmet({ contentSecurityPolicy: false, crossOriginResourcePolicy: { policy: 'cross-origin' } }))
-app.use(express.json({ limit: '300kb' }), cookieParser())
-app.use('/uploads', express.static(UP))
+app.use(cookieParser())
+app.use(express.json())
+
+const allowedOrigins = [
+  process.env.FRONTEND_URL,
+  'http://localhost:5173'
+].filter(Boolean)
+
+app.use(cors({
+  origin: (origin, callback) => {
+    if (!origin || allowedOrigins.includes(origin)) {
+      return callback(null, true)
+    }
+    return callback(new Error('Not allowed by CORS'))
+  },
+  credentials: true
+}))
 
 const wrap = f => (q, r, n) => Promise.resolve(f(q, r, n)).catch(e => { console.error(e); r.status(e.code === 11000 ? 400 : 500).json({ error: e.code === 11000 ? 'This slug/email already exists' : 'Server error' }) })
 const slugify = s => String(s || '').toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
@@ -33,8 +47,11 @@ const limit = (max, ms = 600000) => rateLimit({ windowMs: ms, max, standardHeade
 // ---------- Public API ----------
 app.get('/api/public/bootstrap', wrap(async (_, r) => {
   const [programs, news, faculty, settings] = await Promise.all([
-    Program.find({ published: true }).sort('title').lean(), Post.find({ published: true }).select('-body').sort('-createdAt').limit(30).lean(),
-    Faculty.find({ published: true }).sort('name').lean(), Setting.findOne({ key: 'site' }).lean()])
+    Program.find({ published: true }).sort('title').lean(), 
+    Post.find({ published: true }).select('-body').sort('-createdAt').limit(30).lean(),
+    Faculty.find({ published: true }).sort('name').lean(), 
+    Setting.findOne({ key: 'site' }).lean()
+  ])
   r.json({ programs, news, faculty, settings: settings || {} })
 }))
 app.get('/api/public/posts/:slug', wrap(async (q, r) => { const p = await Post.findOne({ slug: q.params.slug, published: true }).lean(); p ? r.json(p) : r.status(404).json({ error: 'Not found' }) }))
@@ -57,34 +74,108 @@ app.post('/api/enquiries', limit(5), wrap(async (q, r) => {
   await Enquiry.create(d); notify(d); r.json({ ok: true, ref: d.ref })
 }))
 
-// ---------- Auth ----------
+// ---------- Auth: Netlify + Render Production ----------
+
+const cookieOptions = {
+  httpOnly: true,
+  secure: true,
+  sameSite: 'none',
+  path: '/',
+  maxAge: 8 * 60 * 60 * 1000
+}
+
 app.post('/api/auth/login', limit(10), wrap(async (q, r) => {
   const { email, password } = q.body || {}
-  const u = await User.findOne({ email: String(email || '').toLowerCase().trim() })
-  if (!u || !(await bcrypt.compare(String(password || ''), u.passwordHash))) return r.status(401).json({ error: 'Invalid email or password' })
-  const s = { id: u._id, email: u.email, role: u.role, name: u.name }
-  r.cookie('session', jwt.sign(s, SECRET, { expiresIn: '8h' }), { httpOnly: true, sameSite: 'strict', secure: process.env.NODE_ENV === 'production', maxAge: 28800000 })
+
+  const u = await User.findOne({
+    email: String(email || '').trim().toLowerCase()
+  })
+
+  if (!u || !(await bcrypt.compare(String(password || ''), u.passwordHash))) {
+    return r.status(401).json({ error: 'Invalid email or password' })
+  }
+
+  const s = {
+    id: String(u._id),
+    email: u.email, 
+    role: u.role,
+    name: u.name
+  }
+
+  const token = jwt.sign(s, SECRET, { expiresIn: '8h' })
+
+  r.cookie('session', token, cookieOptions)
+
   r.json(s)
 }))
+
+// ---------- Forgot Password ----------
+
 app.post('/api/auth/forgot-password', limit(5), wrap(async (q, r) => {
   const email = String(q.body?.email || '').trim().toLowerCase()
-  if (!/^\S+@\S+\.\S+$/.test(email)) return r.status(400).json({ error: 'Please enter a valid email address.' })
+
+  if (!/^\S+@\S+\.\S+$/.test(email)) {
+    return r.status(400).json({
+      error: 'Please enter a valid email address.'
+    })
+  }
+
   const user = await User.findOne({ email })
-  // Use the same response whether the account exists or not to prevent email enumeration.
+
   if (user) {
-    if (!process.env.SMTP_HOST || !process.env.SMTP_USER || !process.env.SMTP_PASS) {
-      return r.status(503).json({ error: 'Password reset email is not configured. Please contact the site administrator.' })
+    if (!process.env.SMTP_HOST ||
+        !process.env.SMTP_USER ||
+        !process.env.SMTP_PASS) {
+      return r.status(503).json({
+        error: 'Password reset email is not configured. Please contact the site administrator.'
+      })
     }
+
     const token = crypto.randomBytes(32).toString('hex')
-    user.resetPasswordTokenHash = crypto.createHash('sha256').update(token).digest('hex')
+
+    user.resetPasswordTokenHash = crypto
+      .createHash('sha256')
+      .update(token)
+      .digest('hex')
+
     user.resetPasswordExpiresAt = new Date(Date.now() + 30 * 60 * 1000)
+
     await user.save()
+
     const mailer = (await import('nodemailer')).default
-    const transport = mailer.createTransport({ host: process.env.SMTP_HOST, port: Number(process.env.SMTP_PORT || 587), secure: String(process.env.SMTP_SECURE || 'false') === 'true', auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS } })
-    const resetBase = process.env.SITE_URL || (process.env.NODE_ENV !== 'production' ? (q.get('origin') || 'http://localhost:5173') : SITE)
-    const resetUrl = `${resetBase.replace(/\/$/, '')}/admin/reset-password?token=${encodeURIComponent(token)}`
+
+    const transport = mailer.createTransport({
+      host: process.env.SMTP_HOST,
+      port: Number(process.env.SMTP_PORT || 587),
+      secure: String(process.env.SMTP_SECURE || 'false') === 'true',
+      auth: {
+        user: process.env.SMTP_USER,
+        pass: process.env.SMTP_PASS
+      }
+    })
+
+    const resetBase = process.env.FRONTEND_URL || process.env.SITE_URL
+
+    if (!resetBase) {
+      throw new Error('FRONTEND_URL is not configured')
+    }
+
+    const resetUrl =
+      `${resetBase.replace(/\/+$/, '')}/admin/reset-password?token=${encodeURIComponent(token)}`
+
     try {
-      await transport.sendMail({ from: process.env.SMTP_FROM || process.env.SMTP_USER, to: user.email, subject: 'Reset your Lahore Law College admin password', text: `A password reset was requested for your account. Open this link within 30 minutes to choose a new password:\n\n${resetUrl}\n\nIf you did not request this, you can ignore this email.` })
+      await transport.sendMail({
+        from: process.env.SMTP_FROM || process.env.SMTP_USER,
+        to: user.email,
+        subject: 'Reset your Lahore Law College admin password',
+        text: `A password reset was requested for your account.
+
+Open this link within 30 minutes to choose a new password:
+
+${resetUrl}
+
+If you did not request this, you can ignore this email.`
+      })
     } catch (e) {
       user.resetPasswordTokenHash = undefined
       user.resetPasswordExpiresAt = undefined
@@ -92,28 +183,102 @@ app.post('/api/auth/forgot-password', limit(5), wrap(async (q, r) => {
       throw e
     }
   }
-  r.json({ message: 'If an account exists for that email, a password reset link has been sent.' })
+
+  r.json({
+    message: 'If an account exists for that email, a password reset link has been sent.'
+  })
 }))
+
+// ---------- Reset Password ----------
+
 app.post('/api/auth/reset-password', limit(10), wrap(async (q, r) => {
   const token = String(q.body?.token || '')
   const password = String(q.body?.password || '')
-  if (password.length < 8) return r.status(400).json({ error: 'Password must be at least 8 characters long.' })
-  if (!/^[a-f0-9]{64}$/i.test(token)) return r.status(400).json({ error: 'This reset link is invalid or expired. Please request a new one.' })
-  const tokenHash = crypto.createHash('sha256').update(token).digest('hex')
-  const user = await User.findOne({ resetPasswordTokenHash: tokenHash, resetPasswordExpiresAt: { $gt: new Date() } })
-  if (!user) return r.status(400).json({ error: 'This reset link is invalid or expired. Please request a new one.' })
+
+  if (password.length < 8) {
+    return r.status(400).json({
+      error: 'Password must be at least 8 characters long.'
+    })
+  }
+
+  if (!/^[a-f0-9]{64}$/i.test(token)) {
+    return r.status(400).json({
+      error: 'This reset link is invalid or expired. Please request a new one.'
+    })
+  }
+
+  const tokenHash = crypto
+    .createHash('sha256')
+    .update(token)
+    .digest('hex')
+
+  const user = await User.findOne({
+    resetPasswordTokenHash: tokenHash,
+    resetPasswordExpiresAt: { $gt: new Date() }
+  })
+
+  if (!user) {
+    return r.status(400).json({
+      error: 'This reset link is invalid or expired. Please request a new one.'
+    })
+  }
+
   user.passwordHash = await bcrypt.hash(password, 10)
+
   user.resetPasswordTokenHash = undefined
   user.resetPasswordExpiresAt = undefined
+
   await user.save()
-  r.json({ message: 'Password reset successfully. You can now sign in.' })
+
+  r.json({
+    message: 'Password reset successfully. You can now sign in.'
+  })
 }))
-app.post('/api/auth/logout', (q, r) => { r.clearCookie('session'); r.json({ ok: true }) })
+
+// ---------- Logout ----------
+
+app.post('/api/auth/logout', (q, r) => {
+  r.clearCookie('session', {
+    httpOnly: true,
+    secure: true,
+    sameSite: 'none',
+    path: '/'
+  })
+
+  r.json({ ok: true })
+})
+
+// ---------- Authentication Middleware ----------
+
 const auth = (...roles) => (q, r, n) => {
-  try { const s = jwt.verify(q.cookies.session, SECRET); if (roles.length && s.role !== 'ADMIN' && !roles.includes(s.role)) return r.status(403).json({ error: 'Forbidden' }); q.user = s; n() }
-  catch { r.status(401).json({ error: 'Unauthorized' }) }
+  try {
+    const token = q.cookies?.session
+
+    if (!token) {
+      return r.status(401).json({ error: 'Unauthorized' })
+    }
+
+    const s = jwt.verify(token, SECRET)
+
+    if (roles.length &&
+        s.role !== 'ADMIN' &&
+        !roles.includes(s.role)) {
+      return r.status(403).json({ error: 'Forbidden' })
+    }
+
+    q.user = s
+    n()
+
+  } catch (e) {
+    return r.status(401).json({ error: 'Unauthorized' })
+  }
 }
-app.get('/api/auth/me', auth(), (q, r) => r.json(q.user))
+
+// ---------- Check Logged-in User ----------
+
+app.get('/api/auth/me', auth(), (q, r) => {
+  r.json(q.user)
+})
 
 // ---------- Admin / CMS ----------
 const log = (q, action, id) => Audit.create({ userEmail: q.user.email, action, entity: q.params.model || 'settings', entityId: String(id || '') })
@@ -162,7 +327,7 @@ if (fs.existsSync(DIST)) {
   app.get('*', wrap(async (q, r) => {
     let html = fs.readFileSync(path.join(DIST, 'index.html'), 'utf8'), m = '', x
     if ((x = q.path.match(/^\/programs\/([^/]+)$/))) { const d = await Program.findOne({ slug: x[1], published: true }).lean(); if (d) m = meta(d.seoTitle || d.title, d.seoDescription || d.summary, q.path) }
-    else if ((x = q.path.match(/^\/news\/([^/]+)$/))) { const d = await Post.findOne({ slug: x[1], published: true }).lean(); if (d) m = meta(d.seoTitle || d.title, d.seoDescription || d.excerpt, q.path) }
+    else if ((x = q.path.match(/^\/news\/([^/]+)$/))) { const PostModel = Post; const d = await PostModel.findOne({ slug: x[1], published: true }).lean(); if (d) m = meta(d.seoTitle || d.title, d.seoDescription || d.excerpt, q.path) }
     if (m) html = html.replace(/<title>.*?<\/title>/, '').replace(/<meta name="description"[^>]*>/, '')
     r.send(html.replace('<!--META-->', m))
   }))
@@ -175,4 +340,5 @@ try {
   console.error('MongoDB connection failed:', e.message)
   process.exit(1)
 }
+
 app.listen(process.env.PORT || 5000, () => console.log('Server running on port', process.env.PORT || 5000))
