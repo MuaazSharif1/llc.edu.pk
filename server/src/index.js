@@ -95,11 +95,13 @@ async function sendBrevoEmail({ to, subject, text }) {
 
 async function notify(e) {
   try {
-    await sendBrevoEmail({
-      to: process.env.ADMISSIONS_EMAIL,
-      subject: `New enquiry ${e.ref}`,
-      text: `${e.name} <${e.email}> - ${e.program}\n${e.message}`
-    })
+    if (process.env.ADMISSIONS_EMAIL) {
+      await sendBrevoEmail({
+        to: process.env.ADMISSIONS_EMAIL,
+        subject: `New enquiry ${e.ref}`,
+        text: `${e.name} <${e.email}> - ${e.program}\n${e.message}`
+      })
+    }
 
     await sendBrevoEmail({
       to: e.email,
