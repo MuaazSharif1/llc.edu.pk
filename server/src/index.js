@@ -18,9 +18,10 @@ import { User, Program, Post, Faculty, Enquiry, Setting, Audit } from './models.
 const dir = path.dirname(fileURLToPath(import.meta.url))
 const DIST = path.join(dir, '../../client/dist'), UP = path.join(dir, '../uploads')
 fs.mkdirSync(UP, { recursive: true })
-app.use('/uploads', express.static(UP));
+
 const SECRET = process.env.JWT_SECRET || 'dev-secret', SITE = process.env.SITE_URL || 'http://localhost:5000'
 const app = express()
+app.use('/uploads', express.static(UP));
 app.set('trust proxy', 1)
 app.use(helmet({ contentSecurityPolicy: false, crossOriginResourcePolicy: { policy: 'cross-origin' } }))
 app.use(cookieParser())
