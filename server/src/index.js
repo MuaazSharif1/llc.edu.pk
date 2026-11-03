@@ -42,7 +42,14 @@ app.use(cors({
   credentials: true
 }))
 
-const wrap = f => (q, r, n) => Promise.resolve(f(q, r, n)).catch(e => { console.error(e); r.status(e.code === 11000 ? 400 : 500).json({ error: e.code === 11000 ? 'This slug/email already exists' : 'Server error' }) })
+// const wrap = f => (q, r, n) => Promise.resolve(f(q, r, n)).catch(e => { console.error(e); r.status(e.code === 11000 ? 400 : 500).json({ error: e.code === 11000 ? 'This slug/email already exists' : 'Server error' }) })
+const wrap = f => (q, r, n) =>
+  Promise.resolve(f(q, r, n)).catch(e => {
+    console.error('API ERROR:', e)
+    r.status(e.code === 11000 ? 400 : 500).json({
+      error: e.code === 11000 ? 'This slug/email already exists' : e.message
+    })
+  })
 const slugify = s => String(s || '').toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
 const limit = (max, ms = 600000) => rateLimit({ windowMs: ms, max, standardHeaders: true, legacyHeaders: false, message: { error: 'Too many requests. Please try again later.' } })
 
