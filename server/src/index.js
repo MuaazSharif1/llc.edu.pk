@@ -58,14 +58,59 @@ app.get('/api/public/bootstrap', wrap(async (_, r) => {
 }))
 app.get('/api/public/posts/:slug', wrap(async (q, r) => { const p = await Post.findOne({ slug: q.params.slug, published: true }).lean(); p ? r.json(p) : r.status(404).json({ error: 'Not found' }) }))
 
-async function notify(e) {
-  if (!process.env.SMTP_HOST) return
-  try {
-    const t = (await import('nodemailer')).default.createTransport({ host: process.env.SMTP_HOST, port: 587, auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS } })
-    await t.sendMail({ from: process.env.SMTP_USER, to: process.env.ADMISSIONS_EMAIL, subject: `New enquiry ${e.ref}`, text: `${e.name} <${e.email}> - ${e.program}\n${e.message}` })
-    await t.sendMail({ from: process.env.SMTP_USER, to: e.email, subject: 'We received your enquiry', text: `Thank you ${e.name}. Your reference number is ${e.ref}.` })
-  } catch (x) { console.error('mail', x.message) }
+
+async function sendBrevoEmail({ to, subject, text }) {
+  const apiKey = process.env.BREVO_API_KEY
+  const senderEmail = process.env.MAIL_FROM
+
+  if (!apiKey || !senderEmail) {
+    throw new Error('Brevo API key or MAIL_FROM is missing')
+  }
+
+  const response = await fetch('https://api.brevo.com/v3/smtp/email', {
+    method: 'POST',
+    headers: {
+      'accept': 'application/json',
+      'api-key': apiKey,
+      'content-type': 'application/json'
+    },
+    body: JSON.stringify({
+      sender: {
+        name: 'Lahore Law College',
+        email: senderEmail
+      },
+      to: [{ email: to }],
+      subject,
+      textContent: text
+    })
+  })
+
+  if (!response.ok) {
+    const error = await response.text()
+    throw new Error(`Brevo error: ${error}`)
+  }
+
+  return response.json()
 }
+
+async function notify(e) {
+  try {
+    await sendBrevoEmail({
+      to: process.env.ADMISSIONS_EMAIL,
+      subject: `New enquiry ${e.ref}`,
+      text: `${e.name} <${e.email}> - ${e.program}\n${e.message}`
+    })
+
+    await sendBrevoEmail({
+      to: e.email,
+      subject: 'We received your enquiry',
+      text: `Thank you ${e.name}. Your reference number is ${e.ref}.`
+    })
+  } catch (error) {
+    console.error('Brevo enquiry email error:', error.message)
+  }
+}
+
 app.post('/api/enquiries', limit(5), wrap(async (q, r) => {
   const b = q.body || {}
   if (b.website) return r.json({ ok: true, ref: 'LLC-OK' }) // honeypot
@@ -111,7 +156,6 @@ app.post('/api/auth/login', limit(10), wrap(async (q, r) => {
   r.json(s)
 }))
 
-// ---------- Forgot Password ----------
 
 app.post('/api/auth/forgot-password', limit(5), wrap(async (q, r) => {
   const email = String(q.body?.email || '').trim().toLowerCase()
@@ -125,11 +169,9 @@ app.post('/api/auth/forgot-password', limit(5), wrap(async (q, r) => {
   const user = await User.findOne({ email })
 
   if (user) {
-    if (!process.env.SMTP_HOST ||
-        !process.env.SMTP_USER ||
-        !process.env.SMTP_PASS) {
+    if (!process.env.BREVO_API_KEY || !process.env.MAIL_FROM) {
       return r.status(503).json({
-        error: 'Password reset email is not configured. Please contact the site administrator.'
+        error: 'Email service is not configured.'
       })
     }
 
@@ -144,19 +186,7 @@ app.post('/api/auth/forgot-password', limit(5), wrap(async (q, r) => {
 
     await user.save()
 
-    const mailer = (await import('nodemailer')).default
-
-    const transport = mailer.createTransport({
-      host: process.env.SMTP_HOST,
-      port: Number(process.env.SMTP_PORT || 587),
-      secure: String(process.env.SMTP_SECURE || 'false') === 'true',
-      auth: {
-        user: process.env.SMTP_USER,
-        pass: process.env.SMTP_PASS
-      }
-    })
-
-    const resetBase = process.env.FRONTEND_URL || process.env.SITE_URL
+    const resetBase = process.env.FRONTEND_URL
 
     if (!resetBase) {
       throw new Error('FRONTEND_URL is not configured')
@@ -166,8 +196,7 @@ app.post('/api/auth/forgot-password', limit(5), wrap(async (q, r) => {
       `${resetBase.replace(/\/+$/, '')}/admin/reset-password?token=${encodeURIComponent(token)}`
 
     try {
-      await transport.sendMail({
-        from: process.env.SMTP_FROM || process.env.SMTP_USER,
+      await sendBrevoEmail({
         to: user.email,
         subject: 'Reset your Lahore Law College admin password',
         text: `A password reset was requested for your account.
@@ -187,7 +216,7 @@ If you did not request this, you can ignore this email.`
   }
 
   r.json({
-    message: 'If an account exists for that email, a password reset link has been sent.'
+    message: 'If an account exists for this email, a reset link has been sent.'
   })
 }))
 
