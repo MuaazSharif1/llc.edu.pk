@@ -10,12 +10,16 @@ const Admin = lazy(() => import('./admin/Admin'))
 export default function App() {
   const [loading, setLoading] = useState(true)
 
-  useEffect(() => {
-    const done = () => setTimeout(() => setLoading(false), 1000)
-    if (document.readyState === 'complete') done()
-    else window.addEventListener('load', done)
-    return () => window.removeEventListener('load', done)
-  }, [])
+ useEffect(() => {
+  // loader kam az kam 0.9 second dikhe, aur 3 second se zyada kabhi na ruke
+  const minTime = new Promise(r => setTimeout(r, 900))
+  const ready = new Promise(r => {
+    if (document.readyState === 'complete') r()
+    else window.addEventListener('load', r, { once: true })
+  })
+  const maxTime = new Promise(r => setTimeout(r, 3000))
+  Promise.race([Promise.all([minTime, ready]), maxTime]).then(() => setLoading(false))
+}, [])
 
   return (
     <>
