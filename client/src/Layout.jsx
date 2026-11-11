@@ -22,29 +22,23 @@ export default function Layout() {
   }, [pathname, hash])
 
   
-  // Navbar: transparent at top, fixed after 10% scroll
-  useEffect(() => {
-    const updateNavbar = () => {
-      const scrollableHeight =
-        document.documentElement.scrollHeight - window.innerHeight
 
-      const scrollPercent = scrollableHeight > 0
-        ? (window.scrollY / scrollableHeight) * 100
-        : 0
+// Navbar: transparent at top, fixed after 50px scroll
+useEffect(() => {
+  const updateNavbar = () => {
+    document.querySelector('header')?.classList.toggle(
+      'scrolled',
+      window.scrollY > 50
+    )
+  }
 
-      document.querySelector('header')?.classList.toggle(
-        'scrolled',
-        scrollPercent >= 10
-      )
-    }
+  window.addEventListener('scroll', updateNavbar, { passive: true })
+  updateNavbar()
 
-    window.addEventListener('scroll', updateNavbar, { passive: true })
-    updateNavbar()
-
-    return () => {
-      window.removeEventListener('scroll', updateNavbar)
-    }
-  }, [pathname])
+  return () => {
+    window.removeEventListener('scroll', updateNavbar)
+  }
+}, [pathname])
 
 
   return <>
