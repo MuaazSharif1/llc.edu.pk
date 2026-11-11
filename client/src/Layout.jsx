@@ -21,25 +21,6 @@ export default function Layout() {
     window.scrollTo({ top: 0, behavior: 'instant' })
   }, [pathname, hash])
 
-  
-
-// Navbar: transparent at top, fixed after 50px scroll
-useEffect(() => {
-  const updateNavbar = () => {
-    document.querySelector('header')?.classList.toggle(
-      'scrolled',
-      window.scrollY > 50
-    )
-  }
-
-  window.addEventListener('scroll', updateNavbar, { passive: true })
-  updateNavbar()
-
-  return () => {
-    window.removeEventListener('scroll', updateNavbar)
-  }
-}, [pathname])
-
 
   return <>
     <motion.div className="progress" style={{ scaleX }} />
