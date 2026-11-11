@@ -21,7 +21,8 @@ export default function Layout() {
     window.scrollTo({ top: 0, behavior: 'instant' })
   }, [pathname, hash])
 
-  // Navbar: glass at the top, white glass after 10% scroll
+  
+  // Navbar: transparent at top, fixed after 10% scroll
   useEffect(() => {
     const updateNavbar = () => {
       const scrollableHeight =
@@ -33,7 +34,7 @@ export default function Layout() {
 
       document.querySelector('header')?.classList.toggle(
         'scrolled',
-        scrollPercent >= 0
+        scrollPercent >= 10
       )
     }
 
@@ -44,6 +45,7 @@ export default function Layout() {
       window.removeEventListener('scroll', updateNavbar)
     }
   }, [pathname])
+
 
   return <>
     <motion.div className="progress" style={{ scaleX }} />
